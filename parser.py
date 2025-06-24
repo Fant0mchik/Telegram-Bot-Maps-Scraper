@@ -18,17 +18,24 @@ from io import StringIO
 import threading
 import traceback
 
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+
 from telegram import Update
 from telegram.ext import ContextTypes
+
+from userauth import get_user_email
 
 # Configuration
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
 RADIUS_METERS = int(os.getenv("RADIUS_METERS", "50000"))
 REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "2.0"))
-
+GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE")
 if not API_KEY:
     raise RuntimeError("Set the GOOGLE_API_KEY environment variable first.")
+if not GOOGLE_CREDS_FILE:
+    raise RuntimeError("Set the GOOGLE_CREDS_FILE environment variable first.")
 
 # Locations with coordinates
 LOCATIONS: dict[str,list[tuple[str,float,float]]] = {
@@ -273,5 +280,50 @@ def run_collector_in_thread(keyword: str, state: Optional[str]=None):
 
 
 
+def create_google_sheet(title: str = "New Sheet", user_email: str = None) -> str:
+    creds = Credentials.from_service_account_file(
+        GOOGLE_CREDS_FILE,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+    )
+    service = build("sheets", "v4", credentials=creds)
+    sheet = service.spreadsheets().create(body={
+        "properties": {"title": title},
+    }).execute()
+    spreadsheet_id = sheet["spreadsheetId"]
+
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range="A1",
+        valueInputOption="RAW",
+        body={"values": [["Hello world"]]
+    }).execute()
+
+    if user_email:
+        drive_service = build("drive", "v3", credentials=creds)
+        drive_service.permissions().create(
+            fileId=spreadsheet_id,
+            body={
+                "type": "user",
+                "role": "writer",
+                "emailAddress": user_email
+            },
+            sendNotificationEmail=False
+        ).execute()
+
+    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+    return url
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Hi, i'm bot 😎")
+    user_id = str(update.effective_user.id)
+    email = get_user_email(user_id)
+    if not email:
+        await update.message.reply_text("❌ Please set your email first using /setemail.")
+        return
+    try:
+        sheet_url = create_google_sheet("Bot Export", email)
+        await update.message.reply_text(f"✅ Your Google Sheet: {sheet_url}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error creating Google Sheet: {str(e)}")
