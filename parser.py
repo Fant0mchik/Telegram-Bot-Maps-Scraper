@@ -17,6 +17,7 @@ from threading import Lock
 from io import StringIO
 import threading
 import traceback
+import json
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -135,6 +136,7 @@ class Company(Base): # Database model for companies
     id = Column(Integer, primary_key=True)
     place_id = Column(String, unique=True, index=True)
     name = Column(String)
+    state = Column(String)
     address = Column(String)
     phone = Column(String)
     website = Column(String)
@@ -143,7 +145,7 @@ class Company(Base): # Database model for companies
     lng = Column(Float)
     keyword = Column(String)
     fetched_at = Column(String)
-    state = Column(String)
+    updated_at = Column(String)
     __table_args__ = (UniqueConstraint("place_id", name="uix_place"),)
 
 Base.metadata.create_all(bind=engine) 
@@ -159,15 +161,14 @@ def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, sta
     while True:
         for place in response.get("results", []):
             pid = place["place_id"]
-            if pid in existing or pid in seen:
+            if pid in seen:
                 continue
             details = client.place(place_id=pid, fields=[
                 "name", "formatted_address", "international_phone_number",
                 "website", "rating", "geometry",
             ])
             res = details["result"]
-            company = Company(
-                place_id=pid,
+            company_data = dict(
                 name=res.get("name"),
                 address=res.get("formatted_address"),
                 phone=res.get("international_phone_number"),
@@ -176,10 +177,28 @@ def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, sta
                 lat=res.get("geometry", {}).get("location", {}).get("lat"),
                 lng=res.get("geometry", {}).get("location", {}).get("lng"),
                 keyword=keyword,
-                fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 state=state,
             )
-            db.add(company)
+            company = db.query(Company).filter_by(place_id=pid).first()
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if company:
+                updated_fields = []
+                for idx, field in enumerate(["phone", "website", "rating"], start=1):
+                    if getattr(company, field) != company_data[field]:
+                        setattr(company, field, company_data[field])
+                        updated_fields.append(idx)
+                if updated_fields:
+                    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    company.updated_at = json.dumps([updated_fields, now_iso])
+                    db.add(company)
+            else:
+                company = Company(
+                    place_id=pid,
+                    fetched_at=now_iso,
+                    updated_at=None,
+                    **company_data
+                )
+                db.add(company)
             seen.add(pid)
             try:
                 db.commit()
@@ -226,31 +245,6 @@ class CollectorTask:
             return
         self.elapsed = time.time() - start_time
 
-def export_companies_to_csv(filename: str, size: int=1000, skip: int=0, keyword: Optional[str]=None, state: Optional[str]=None):
-    with SessionLocal() as db:
-        query = db.query(Company)
-        if keyword:
-            query = query.filter(Company.keyword == keyword)
-        if state:
-            query = query.filter(Company.state == state)
-        companies = query.offset(size * skip).limit(size).all()
-        with open(filename, "w", newline='', encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "id", "place_id", "name", "address", "phone",
-                "website", "rating", "lat", "lng",
-                "keyword", "fetched_at", "state"
-            ])
-            for c in companies:
-                row = [
-                    c.id, c.place_id, c.name, c.address,
-                    c.phone, c.website, c.rating,
-                    c.lat, c.lng, c.keyword,
-                    c.fetched_at, c.state
-                ]
-
-                row = ["NULL" if v is None else v for v in row]
-                writer.writerow(row)
 
 def log_status(task_id: str, message: str):
     log_file = f"{task_id}.log"
@@ -278,9 +272,7 @@ def run_collector_in_thread(keyword: str, state: Optional[str]=None):
     thread.join()  
     return task.id
 
-
-
-def create_google_sheet(title: str = "New Sheet", user_email: str = None) -> str:
+def create_google_sheet(title: str = "New Sheet", user_email: str = None, keyword: str|None = None, state:str|None=None) -> str:
     creds = Credentials.from_service_account_file(
         GOOGLE_CREDS_FILE,
         scopes=[
@@ -294,12 +286,66 @@ def create_google_sheet(title: str = "New Sheet", user_email: str = None) -> str
     }).execute()
     spreadsheet_id = sheet["spreadsheetId"]
 
+    db = SessionLocal()
+    try:
+        query = db.query(Company)
+        if keyword:
+            query = query.filter(Company.keyword == keyword)
+        if state:
+            query = query.filter(Company.state == state)
+        companies = query.all()
+    finally:
+        db.close()
+
+    headers = ["Place Id","Name", "Address", "Phone", "Website", "Rating", "Lat", "Lng", "Keyword", "State", "Fetched At", "Updated At"]
+    values = [headers]
+    red_rows = []  
+
+    for idx, c in enumerate(companies, start=2):  # start=2, bcs 1 is title
+        values.append([
+            c.place_id, c.name, c.address, c.phone, c.website, c.rating, c.lat, c.lng,
+            c.keyword, c.state, c.fetched_at, c.updated_at
+        ])
+        if c.updated_at:
+            try:
+                updated_fields, _ = json.loads(c.updated_at)
+                for field_idx in updated_fields:
+                    col = 3 + field_idx  # 1->4, 2->5, 3->6
+                    red_rows.append((idx-1, col))
+            except Exception:
+                pass
+
     service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range="A1",
         valueInputOption="RAW",
-        body={"values": [["Hello world"]]
-    }).execute()
+        body={"values": values}
+    ).execute()
+    
+    if red_rows:
+        requests = []
+        for row_idx, col_idx in red_rows:
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": 0,
+                        "startRowIndex": row_idx,
+                        "endRowIndex": row_idx+1,
+                        "startColumnIndex": col_idx,
+                        "endColumnIndex": col_idx+1,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 1, "green": 0.8, "blue": 0.8}
+                        }
+                    },
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            })
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests}
+        ).execute()
 
     if user_email:
         drive_service = build("drive", "v3", credentials=creds)
@@ -316,14 +362,16 @@ def create_google_sheet(title: str = "New Sheet", user_email: str = None) -> str
     url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
     return url
 
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     email = get_user_email(user_id)
     if not email:
         await update.message.reply_text("❌ Please set your email first using /setemail.")
         return
     try:
-        sheet_url = create_google_sheet("Bot Export", email)
+        await update.message.reply_text(f"Started collecting process")
+        run_collector_in_thread("logistics", "TX")
+        sheet_url = create_google_sheet("Bot Export", email,"logistics","TX")
         await update.message.reply_text(f"✅ Your Google Sheet: {sheet_url}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error creating Google Sheet: {str(e)}")

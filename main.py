@@ -6,15 +6,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, Session, sessionmaker
 
-from parser import start_handler  
+from parser import search_handler  
 
 from userauth import get_user_email, set_user_email, is_valid_email
-
 
 # Load environment
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 
 # Command /start
 async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -55,7 +53,7 @@ def main():
     # Command handlers
     app.add_handler(CommandHandler("start", command_start))
     app.add_handler(CommandHandler("setemail", command_setemail))
-    app.add_handler(CommandHandler("search", start_handler))  # From parser.py
+    app.add_handler(CommandHandler("search", search_handler))  # From parser.py
 
     # Text messages
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
