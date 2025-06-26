@@ -126,6 +126,50 @@ LOCATIONS: dict[str,list[tuple[str,float,float]]] = {
     "WY": [("Cheyenne", 41.1400, -104.8202)],
 }
 
+data = {
+  "AL": {
+    "large": [("Huntsville", 34.73, -86.586), ("Birmingham", 33.521, -86.802), ("Montgomery", 32.367, -86.300)],
+    "medium": [("Mobile", 30.694, -88.043), ("Tuscaloosa", 33.210, -87.569), ("Hoover", 33.405, -86.811)],
+    "small": [("Dothan", 31.223, -85.390), ("Auburn", 32.610, -85.481), ("Decatur", 34.606, -86.983)]
+  },
+  "AK": {
+    "large": [("Anchorage", 61.218, -149.900), ("Fairbanks", 64.838, -147.716)],
+    "medium": [("Juneau", 58.302, -134.420), ("Eagle River", 61.321, -149.568), ("Wasilla", 61.581, -149.441)],
+    "small": [("Knik-Fairview", 61.513, -149.600), ("College", 64.857, -147.803), ("Sitka", 57.053, -135.331)]
+  },
+  "AZ": {
+    "large": [("Phoenix", 33.448, -112.074), ("Tucson", 32.221, -110.976), ("Mesa", 33.424, -111.833)],
+    "medium": [("Chandler", 33.308, -111.845), ("Gilbert", 33.360, -111.802), ("Glendale", 33.538, -112.186), ("Scottsdale", 33.501, -111.925)],
+    "small": [("Peoria", 33.580, -112.237), ("Tempe", 33.427, -111.940), ("Surprise", 33.631, -112.367), ("Casa Grande", 32.879, -111.757)]
+  },
+  "CA": {
+    "large": [("Los Angeles", 34.052, -118.244), ("San Diego", 32.716, -117.165), ("San Jose", 37.339, -121.895)],
+    "medium": [("San Francisco", 37.775, -122.419), ("Fresno", 36.748, -119.772), ("Sacramento", 38.582, -121.494)],
+    "small": [("Long Beach", 33.767, -118.189), ("Oakland", 37.804, -122.271), ("Bakersfield", 35.373, -119.019)]
+  },
+  "FL": {
+    "large": [("Jacksonville", 30.332, -81.656), ("Miami", 25.774, -80.194), ("Tampa", 27.948, -82.458)],
+    "medium": [("Orlando", 28.538, -81.379), ("St. Petersburg", 27.771, -82.679), ("Hialeah", 25.858, -80.278)],
+    "small": [("Tallahassee", 30.438, -84.281), ("Fort Lauderdale", 26.122, -80.143), ("Cape Coral", 26.563, -81.950)]
+  },
+  "NC": {
+    "large": [("Charlotte", 35.227, -80.843), ("Raleigh", 35.772, -78.639)],
+    "medium": [("Greensboro", 36.073, -79.792), ("Durham", 35.994, -78.899), ("Winston-Salem", 36.100, -80.244)],
+    "small": [("Fayetteville", 35.053, -78.878), ("Cary", 35.792, -78.781), ("Wilmington", 34.236, -77.946)]
+  },
+  "TX": {
+    "large": [("Houston", 29.763, -95.363), ("San Antonio", 29.424, -98.494), ("Dallas", 32.783, -96.807)],
+    "medium": [("Fort Worth", 32.725, -97.321), ("Austin", 30.267, -97.743), ("El Paso", 31.759, -106.487)],
+    "small": [("Arlington", 32.736, -97.108), ("Corpus Christi", 27.801, -97.396), ("Plano", 33.020, -96.699)]
+  },
+  "VA": {
+    "large": [("Virginia Beach", 36.853, -75.978), ("Norfolk", 36.847, -76.285), ("Chesapeake", 36.819, -76.275)],
+    "medium": [("Richmond", 37.554, -77.460), ("Arlington", 38.881, -77.104), ("Newport News", 36.980, -76.430)],
+    "small": [("Alexandria", 38.805, -77.047), ("Hampton", 37.030, -76.345), ("Roanoke", 37.271, -79.941)]
+  }
+}
+
+
 # DB setup
 Base = declarative_base()
 engine = create_engine("sqlite:///companies.db", echo=False, future=True)
@@ -362,16 +406,3 @@ def create_google_sheet(title: str = "New Sheet", user_email: str = None, keywor
     url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
     return url
 
-async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    email = get_user_email(user_id)
-    if not email:
-        await update.message.reply_text("❌ Please set your email first using /setemail.")
-        return
-    try:
-        await update.message.reply_text(f"Started collecting process")
-        run_collector_in_thread("logistics", "TX")
-        sheet_url = create_google_sheet("Bot Export", email,"logistics","TX")
-        await update.message.reply_text(f"✅ Your Google Sheet: {sheet_url}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error creating Google Sheet: {str(e)}")

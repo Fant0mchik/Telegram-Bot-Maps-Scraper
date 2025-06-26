@@ -2,17 +2,18 @@ import os
 import re
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, Session, sessionmaker
 
-from parser import search_handler  
+from searchdialog import search_handler, handle_text_response, handle_callback_query
 
 from userauth import get_user_email, set_user_email, is_valid_email
 
 # Load environment
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 
 # Command /start
 async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -21,7 +22,8 @@ async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     email_status = email if email else "Not set"
     message = (
         "ℹ️ Info center\n"
-        f"Email status:\n{email_status}\n\n"
+        f"Email status: {'✅' if email else '❌'}\n"
+        f"{email_status}\n\n"
         "/setemail - set new or update current email\n\n"
         "Main commands:\n/search - main function"
     )
@@ -32,19 +34,7 @@ async def command_setemail(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text("Please enter your email address:")
     context.user_data["awaiting_email"] = True
 
-# Handle plain text (possibly email input)
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.user_data.get("awaiting_email"):
-        email = update.message.text.strip()
-        if is_valid_email(email):
-            user_id = str(update.effective_user.id)
-            set_user_email(user_id, email)
-            context.user_data["awaiting_email"] = False
-            await update.message.reply_text(f"✅ Email saved: {email}")
-        else:
-            await update.message.reply_text("❌ Invalid email. Try again:")
-    else:
-        await update.message.reply_text("Unknown command or input. Use /start to begin.")
+
 
 # Init bot
 def main():
@@ -56,7 +46,10 @@ def main():
     app.add_handler(CommandHandler("search", search_handler))  # From parser.py
 
     # Text messages
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    #app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_response))
+    app.add_handler(CallbackQueryHandler(handle_callback_query))
+
 
     print("Bot is running...")
     app.run_polling()
