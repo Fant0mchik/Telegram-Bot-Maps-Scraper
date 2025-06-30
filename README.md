@@ -84,12 +84,12 @@ python main.py
 
 - Use `/search` to begin a location search:
 
- - Enter a keyword (e.g., "logistics").
+  - Enter a keyword (e.g., "logistics").
 
- - Select a U.S. state.
+  - Select a U.S. state.
 
- - Choose a city size or enter a city manually.
+  - Choose a city size or enter a city manually.
 
- - Wait while the bot collects and processes data.
+  - Wait while the bot collects and processes data.
 
- - Receive a link to a Google Sheet with the results.
+  - Receive a link to a Google Sheet with the results.
