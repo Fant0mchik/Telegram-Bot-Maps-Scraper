@@ -43,7 +43,7 @@ def main():
     # Command handlers
     app.add_handler(CommandHandler("start", command_start))
     app.add_handler(CommandHandler("setemail", command_setemail))
-    app.add_handler(CommandHandler("search", search_handler))  # From parser.py
+    app.add_handler(CommandHandler("search", search_handler))  
 
     # Text messages
     #app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
