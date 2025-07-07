@@ -25,6 +25,14 @@ from telegram.ext import ContextTypes
 
 from userauth import get_user_email
 
+
+import logging
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO  # You can change this to DEBUG for more verbosity
+)
+logger = logging.getLogger(__name__)
 # Configuration
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -152,6 +160,7 @@ class CollectorTask:
 
 
 def log_status(task_id: str, message: str):
+    logger.info(f"task_id {task_id}, {message}")
     log_file = f"{task_id}.log"
     with open(log_file, "a", encoding="utf-8") as lf:
         lf.write(message + "\n")
@@ -202,7 +211,7 @@ def create_google_sheet(
     )
     
     # Create new spreadsheet
-    service = build("sheets", "v4", credentials=creds)
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
     sheet = service.spreadsheets().create(body={"properties": {"title": title}}).execute()
     spreadsheet_id = sheet["spreadsheetId"]
 
