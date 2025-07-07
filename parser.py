@@ -9,10 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from dotenv import load_dotenv
 import googlemaps
-from sqlalchemy import (Column, Float, Integer, String, UniqueConstraint,
-                        create_engine, or_)
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import Session, sessionmaker
+from db import SessionLocal, Company, Session, or_
 from threading import Lock
 from io import StringIO
 import threading
@@ -43,30 +40,6 @@ if not GOOGLE_CREDS_FILE:
 with open('states.json', 'r', encoding='utf-8') as file:
     LOCATIONS = json.load(file)
 
-# DB setup
-Base = declarative_base()
-engine = create_engine("sqlite:///companies.db", echo=False, future=True)
-SessionLocal = sessionmaker(engine, expire_on_commit=False, class_=Session)
-
-
-class Company(Base): # Database model for companies
-    __tablename__ = "companies"
-    id = Column(Integer, primary_key=True)
-    place_id = Column(String, unique=True, index=True)
-    name = Column(String)
-    state = Column(String)
-    address = Column(String)
-    phone = Column(String)
-    website = Column(String)
-    rating = Column(Float)
-    lat = Column(Float)
-    lng = Column(Float)
-    keyword = Column(String)
-    fetched_at = Column(String)
-    updated_at = Column(String)
-    __table_args__ = (UniqueConstraint("place_id", name="uix_place"),)
-
-Base.metadata.create_all(bind=engine) 
 
 # Google API client
 client = googlemaps.Client(key=API_KEY)
@@ -76,6 +49,7 @@ def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, sta
     existing = {row[0] for row in db.query(Company.place_id).yield_per(500)}
     seen: set[str] = set()
     response = client.places_nearby(location=(lat, lng), radius=RADIUS_METERS, keyword=keyword)
+
     while True:
         for place in response.get("results", []):
             pid = place["place_id"]

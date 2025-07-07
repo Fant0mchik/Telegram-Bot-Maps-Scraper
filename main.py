@@ -20,6 +20,7 @@ async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = str(update.effective_user.id)
     email = get_user_email(user_id)
     email_status = email if email else "Not set"
+    print(f"User {user_id} started the bot. Email: {email_status}")
     message = (
         "ℹ️ Info center\n"
         f"Email status: {'✅' if email else '❌'}\n"
