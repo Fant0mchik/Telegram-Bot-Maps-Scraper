@@ -97,7 +97,7 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
     reply_target = get_reply_target(update)
     if not keyword or not email:
         if reply_target:
-            await reply_target.reply_text("❌ Session expired or email not set. Use /search to restart.")
+            await reply_target.reply_text("❌ Session expired or email not set. Use /start to restart.")
         return
 
     message = f"🔁 Starting collection for keyword: `{keyword}`"

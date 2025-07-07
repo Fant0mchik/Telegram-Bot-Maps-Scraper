@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, Session, sessionmaker
-
+import logging
 from searchdialog import search_handler, handle_text_response, handle_callback_query
 
 from userauth import get_user_email, set_user_email, is_valid_email
@@ -13,8 +13,11 @@ from userauth import get_user_email, set_user_email, is_valid_email
 # Load environment
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO  # You can change this to DEBUG for more verbosity
+)
+logger = logging.getLogger(__name__)
 # Command /start
 async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -51,7 +54,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
 
-    print("Bot is running...")
+    logger.info("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
