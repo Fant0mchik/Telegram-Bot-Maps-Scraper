@@ -3,6 +3,7 @@ from telegram.ext import ContextTypes
 from parser import run_collector_in_thread, create_google_sheet, LOCATIONS
 from userauth import get_user_email, set_user_email, is_valid_email
 from typing import Optional
+from db import SessionLocal, User
 
 STATES_PER_PAGE = 10
 STATE_CODES = sorted(LOCATIONS.keys())
@@ -44,6 +45,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["search_data"] = {}
 
 async def handle_text_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = update.effective_user.username or "Unknown"
     stage = context.user_data.get("search_stage")
     search_data = context.user_data.get("search_data", {})
     
@@ -51,7 +53,7 @@ async def handle_text_response(update: Update, context: ContextTypes.DEFAULT_TYP
         email = update.message.text.strip()
         if is_valid_email(email):
             user_id = str(update.effective_user.id)
-            set_user_email(user_id, email)
+            set_user_email(user_id, email, username)
             context.user_data["awaiting_email"] = False
             await update.message.reply_text(f"✅ Email saved: {email}")
         else:
@@ -100,7 +102,7 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
             await reply_target.reply_text("❌ Session expired or email not set. Use /start to restart.")
         return
 
-    message = f"🔁 Starting collection for keyword: `{keyword}`"
+    message = f"🔁 Started collection for keyword: `{keyword}`"
     if state != "ALL":
         message += f" in `{state}`"
     if city_type and city_type != "all":
@@ -112,18 +114,16 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
         await reply_target.reply_text(message, parse_mode="Markdown")
 
     try:
-        run_collector_in_thread(keyword, state, city_type, city_name)
-        sheet_name = f"'{keyword}' Export"
-        if state != "ALL":
-            sheet_name += f" in '{state}'"
-        if city_type and city_type != "all":
-            sheet_name += f" ({city_type})"
-        if city_name:
-            sheet_name += f" - {city_name}"
-            
-        sheet_url = create_google_sheet(sheet_name, email, keyword, state, city_type, city_name)
-        if reply_target:
-            await reply_target.reply_text(f"✅ Your Google Sheet:\n{sheet_url}")
+        with SessionLocal() as db:
+            run_collector_in_thread(keyword, state, city_type, city_name, user_id)
+            context.user_data["pending_sheet_params"] = {
+                "user_id": user_id,
+                "keyword": keyword,
+                "state": state,
+                "city_type": city_type,
+                "city_name": city_name,
+            }
+            await ask_overwrite_sheet(update, context)
     except Exception as e:
         if reply_target:
             await reply_target.reply_text(f"❌ Error occurred: {str(e)}")
@@ -156,3 +156,55 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await execute_search(update, context, search_data)
         return
+
+async def ask_overwrite_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_target = get_reply_target(update)
+    keyboard = [
+        [
+            InlineKeyboardButton("🔁 Overwrite", callback_data="sheet_overwrite:True"),
+            InlineKeyboardButton("➕ Append", callback_data="sheet_overwrite:False"),
+        ]
+    ]
+    if reply_target:
+        await reply_target.reply_text(
+            "Do you want to overwrite the Google Sheet or append to it?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def handle_sheet_overwrite(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    task_state = data.split(":")[1] == "True"
+    params = context.user_data.get("pending_sheet_params", {})
+    if not params:
+        return
+    user_id = params.get("user_id")
+    keyword = params.get("keyword")
+    state = params.get("state")
+    city_type = params.get("city_type")
+    city_name = params.get("city_name")
+    reply_target = get_reply_target(update)
+
+    with SessionLocal() as db:
+            user = db.query(User).filter_by(user_id=user_id).first()
+            if not user:
+                if reply_target:
+                    await reply_target.reply_text("❌ User not found.")
+                return
+            try:
+                sheet_url = create_google_sheet(
+                    user.google_sheet_id,
+                    task_state,
+                    user.email,
+                    keyword,
+                    state,
+                    city_type,
+                    city_name
+                )
+                context.user_data["pending_sheet_params"] = None
+                if reply_target:
+                    await reply_target.reply_text(f"✅ Your Google Sheet:\n{sheet_url}")
+            except Exception as e:
+                if reply_target:
+                    await reply_target.reply_text(f"❌ Error occurred: {str(e)}")

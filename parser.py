@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from dotenv import load_dotenv
 import googlemaps
-from db import SessionLocal, Company, Session, or_
+from db import SessionLocal, Company, Session, or_, User, JobRun, JobRunCompany
 from threading import Lock
 from io import StringIO
 import threading
@@ -53,7 +53,7 @@ with open('states.json', 'r', encoding='utf-8') as file:
 client = googlemaps.Client(key=API_KEY)
 
 # Collector
-def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, state: Optional[str]=None):
+def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, state: Optional[str]=None, job_run_id: Optional[int]=None):
     existing = {row[0] for row in db.query(Company.place_id).yield_per(500)}
     seen: set[str] = set()
     response = client.places_nearby(location=(lat, lng), radius=RADIUS_METERS, keyword=keyword)
@@ -99,6 +99,14 @@ def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, sta
                     **company_data
                 )
                 db.add(company)
+                db.commit()
+            # Додаємо зв’язок JobRunCompany
+            if job_run_id:
+                existing_link = db.query(JobRunCompany).filter_by(job_run_id=job_run_id, company_id=company.id).first()
+                if not existing_link:
+                    link = JobRunCompany(job_run_id=job_run_id, company_id=company.id)
+                    db.add(link)
+                    db.commit()
             seen.add(pid)
             try:
                 db.commit()
@@ -115,9 +123,14 @@ def collect_companies(
     states: Optional[str] = None,
     task_id: Optional[str] = None,
     city_type: Optional[str] = None,
-    city_name: Optional[str] = None
+    city_name: Optional[str] = None,
+    job_run_id: Optional[int] = None,
+    db: Optional[Session] = None
 ):
-    db = SessionLocal()
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
     try:
         if states is None or states == "ALL":
             locations = LOCATIONS.items()
@@ -144,12 +157,14 @@ def collect_companies(
                         keyword, 
                         city_data['lat'], 
                         city_data['lng'], 
-                        state_code
+                        state_code,
+                        job_run_id
                     )
     except Exception as e:
         raise
     finally:
-        db.close()
+        if close_db:
+            db.close()
 
 class CollectorTask:
     def __init__(self, keyword: str, states: Optional[str]=None):
@@ -161,25 +176,40 @@ class CollectorTask:
 
 def log_status(task_id: str, message: str):
     logger.info(f"task_id {task_id}, {message}")
-    log_file = f"{task_id}.log"
+    log_file = f"logs\{task_id}.log"
     with open(log_file, "a", encoding="utf-8") as lf:
         lf.write(message + "\n")
 
-def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: Optional[str] = None, city_name: Optional[str] = None):
+def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: Optional[str] = None, city_name: Optional[str] = None, user_id: Optional[str] = None):
     task = CollectorTask(keyword, state)
-    
     log_status(task.id, f"Task {task.id} started at {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
-    
     def target():
         start_time = time.time()
+        db = SessionLocal()
         try:
+            # Створюємо JobRun
+            user = db.query(User).filter_by(user_id=user_id).first() if user_id else None
+            if not user:
+                raise ValueError(f"User with user_id={user_id} not found in database.")
+            job_run = JobRun(
+                user_email_id=user.id,
+                params=json.dumps({"keyword": keyword, "state": state, "city_type": city_type, "city_name": city_name}),
+                started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                finished_at=None
+            )
+            db.add(job_run)
+            db.commit()
             collect_companies(
-                keyword=task.keyword,
-                states=task.states,
+                keyword=keyword,
+                states=state,
                 task_id=task.id,
                 city_type=city_type,
-                city_name=city_name
+                city_name=city_name,
+                job_run_id=job_run.id,
+                db=db
             )
+            job_run.finished_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            db.commit()
             task.status = "done"
         except Exception as e:
             tb = traceback.format_exc()
@@ -188,19 +218,21 @@ def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: 
         finally:
             elapsed = time.time() - start_time
             log_status(task.id, f"Task {task.id} finished with status: {task.status} in {elapsed:.2f} seconds")
-    
+            db.close()
     thread = threading.Thread(target=target)
     thread.start()
     thread.join()
     return task.id
 
 def create_google_sheet(
-        title: str = "New Sheet", 
-        user_email: str = None, 
-        keyword: str|None = None, 
-        state: str|None=None,
+        spreadsheet_id: str = None,
+        task_state: bool = False,  # If True, overwrite existing spreadsheet, False - Append to existing
+        user_email: str = None,
+        keyword: str | None = None,
+        state: str | None = None,
         city_type: Optional[str] = None,
-        city_name: Optional[str] = None
+        city_name: Optional[str] = None,
+        job_run_id: Optional[int] = None,
 ) -> str:
     creds = Credentials.from_service_account_file(
         GOOGLE_CREDS_FILE,
@@ -209,11 +241,11 @@ def create_google_sheet(
             "https://www.googleapis.com/auth/drive"
         ]
     )
-    
-    # Create new spreadsheet
+
     service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    sheet = service.spreadsheets().create(body={"properties": {"title": title}}).execute()
-    spreadsheet_id = sheet["spreadsheetId"]
+
+    if not spreadsheet_id:
+        raise ValueError("spreadsheet_id must be provided to write to an existing Google Sheet.")
 
     db = SessionLocal()
     try:
@@ -229,13 +261,14 @@ def create_google_sheet(
                 cities_in_state = LOCATIONS.get(state, {})
                 cities_of_type = cities_in_state.get(city_type, [])
                 city_names = [city['city'] for city in cities_of_type]
-                query = query.filter(or_(*[Company.address.like(f"%{name}%") for name in city_names]))
+                if city_names:
+                    query = query.filter(or_(*[Company.address.like(f"%{name}%") for name in city_names]))
             else:
                 all_cities_of_type = []
                 for state_data in LOCATIONS.values():
                     all_cities_of_type.extend(city['city'] for city in state_data.get(city_type, []))
-                query = query.filter(or_(*[Company.address.like(f"%{name}%") for name in all_cities_of_type]))
-        
+                if all_cities_of_type:
+                    query = query.filter(or_(*[Company.address.like(f"%{name}%") for name in all_cities_of_type]))
         companies = query.all()
     finally:
         db.close()
@@ -243,7 +276,7 @@ def create_google_sheet(
     # Prepare data for Google Sheets
     headers = ["Place Id", "Name", "Address", "Phone", "Website", "Rating", "Lat", "Lng", "Keyword", "State", "Fetched At", "Updated At"]
     values = [headers]
-    
+
     for company in companies:
         values.append([
             company.place_id,
@@ -260,13 +293,38 @@ def create_google_sheet(
             company.updated_at or ""
         ])
 
-    # Write data to sheet
-    service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range="A1",
-        valueInputOption="RAW",
-        body={"values": values}
-    ).execute()
+    if task_state:
+        # Overwrite: clear and write from A1
+        service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range="A1:Z10000"
+        ).execute()
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="A1",
+            valueInputOption="RAW",
+            body={"values": values}
+        ).execute()
+    else:
+        # Append: get current number of rows and append after them
+        sheet = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="A1:Z10000"
+        ).execute()
+        existing_rows = sheet.get("values", [])
+        start_row = len(existing_rows) + 1  
+        if not existing_rows:
+            append_values = values
+        else:
+            append_values = values[1:] 
+        if append_values:
+            service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range=f"A{start_row}",
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body={"values": append_values}
+            ).execute()
 
     # Share with user
     if user_email:
@@ -279,3 +337,18 @@ def create_google_sheet(
 
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
 
+
+def create_sheet_for_user(username: str):
+    creds = Credentials.from_service_account_file(
+        GOOGLE_CREDS_FILE,
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+    )
+    
+    # Create new spreadsheet
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    sheet = service.spreadsheets().create(body={"properties": {"title": username+"'s sheet"}}).execute()
+    spreadsheet_id = sheet["spreadsheetId"]
+    return spreadsheet_id

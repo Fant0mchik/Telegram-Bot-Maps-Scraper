@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base, Session, sessionmaker
 import logging
-from searchdialog import search_handler, handle_text_response, handle_callback_query
+from searchdialog import handle_sheet_overwrite, search_handler, handle_text_response, handle_callback_query
 
 from userauth import get_user_email, set_user_email, is_valid_email
 
@@ -23,7 +23,6 @@ async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = str(update.effective_user.id)
     email = get_user_email(user_id)
     email_status = email if email else "Not set"
-    print(f"User {user_id} started the bot. Email: {email_status}")
     message = (
         "ℹ️ Info center\n"
         f"Email status: {'✅' if email else '❌'}\n"
@@ -50,8 +49,8 @@ def main():
     app.add_handler(CommandHandler("search", search_handler))  
 
     # Text messages
-    #app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_response))
+    app.add_handler(CallbackQueryHandler(handle_sheet_overwrite, pattern=r"^sheet_overwrite:"))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
 
