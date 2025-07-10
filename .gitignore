@@ -3,5 +3,7 @@ venv/
 .venv/
 *.db
 *.log
-client_secret_79211922095_muh7p9c1ssc0l98eeuqcsivuubkngok1_apps.json
+client_secret_79211922095-8eho4lae2mil8t8jrpcpa2dgkukgo6f8.apps.googleusercontent.com.json
 deleter.py
+*.pickle
+__pycache__/

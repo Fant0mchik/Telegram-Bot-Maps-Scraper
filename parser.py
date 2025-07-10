@@ -12,7 +12,7 @@ import json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
-
+from google_auth import get_credentials
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO  # You can change this to DEBUG for more verbosity
@@ -218,15 +218,9 @@ def create_google_sheet(
         city_name: Optional[str] = None,
         job_run_id: Optional[int] = None,
 ) -> str:
-    creds = Credentials.from_service_account_file(
-        GOOGLE_CREDS_FILE,
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-    )
-
-    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    creds = get_credentials()
+    service = build("sheets", "v4", credentials=creds)
+    drive_service = build("drive", "v3", credentials=creds)
 
     if not spreadsheet_id:
         raise ValueError("spreadsheet_id must be provided to write to an existing Google Sheet.")
@@ -323,16 +317,16 @@ def create_google_sheet(
 
 
 def create_sheet_for_user(username: str):
-    creds = Credentials.from_service_account_file(
-        GOOGLE_CREDS_FILE,
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-    )
+    creds = get_credentials()
+    service = build("sheets", "v4", credentials=creds)
     
-    # Create new spreadsheet
-    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-    sheet = service.spreadsheets().create(body={"properties": {"title": username+"'s sheet"}}).execute()
-    spreadsheet_id = sheet["spreadsheetId"]
+    spreadsheet = {
+        'properties': {
+            'title': username + "'s sheet"
+        }
+    }
+    
+    spreadsheet = service.spreadsheets().create(body=spreadsheet).execute()
+    spreadsheet_id = spreadsheet['spreadsheetId']
+    
     return spreadsheet_id
