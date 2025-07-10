@@ -3,12 +3,10 @@ import re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
-from sqlalchemy import Column, Integer, String, create_engine
-from sqlalchemy.orm import declarative_base, Session, sessionmaker
 import logging
 from searchdialog import handle_sheet_overwrite, search_handler, handle_text_response, handle_callback_query
 
-from userauth import get_user_email, set_user_email, is_valid_email
+from userauth import get_user_email
 
 # Load environment
 load_dotenv()

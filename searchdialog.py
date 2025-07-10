@@ -2,7 +2,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from parser import run_collector_in_thread, create_google_sheet, LOCATIONS
 from userauth import get_user_email, set_user_email, is_valid_email
-from typing import Optional
 from db import SessionLocal, User
 
 STATES_PER_PAGE = 10

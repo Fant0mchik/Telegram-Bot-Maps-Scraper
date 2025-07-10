@@ -1,31 +1,16 @@
 import os
 import time
-import csv
-import sys
 import uuid
-import subprocess
-import argparse
 from datetime import datetime, timezone
 from typing import Optional
 from dotenv import load_dotenv
 import googlemaps
 from db import SessionLocal, Company, Session, or_, User, JobRun, JobRunCompany
-from threading import Lock
-from io import StringIO
 import threading
 import traceback
 import json
-from typing import List, Dict
-
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-
-from telegram import Update
-from telegram.ext import ContextTypes
-
-from userauth import get_user_email
-
-
 import logging
 
 logging.basicConfig(
@@ -176,7 +161,7 @@ class CollectorTask:
 
 def log_status(task_id: str, message: str):
     logger.info(f"task_id {task_id}, {message}")
-    log_file = f"logs\{task_id}.log"
+    log_file = f"logs\\{task_id}.log"
     with open(log_file, "a", encoding="utf-8") as lf:
         lf.write(message + "\n")
 
@@ -187,7 +172,6 @@ def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: 
         start_time = time.time()
         db = SessionLocal()
         try:
-            # Створюємо JobRun
             user = db.query(User).filter_by(user_id=user_id).first() if user_id else None
             if not user:
                 raise ValueError(f"User with user_id={user_id} not found in database.")

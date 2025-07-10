@@ -1,6 +1,5 @@
 from datetime import datetime
 import re
-import time
 from db import SessionLocal, User
 
 
