@@ -39,6 +39,7 @@ async def command_setemail(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 # Init bot
 def main():
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Command handlers

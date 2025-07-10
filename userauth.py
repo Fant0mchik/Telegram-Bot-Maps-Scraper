@@ -17,6 +17,7 @@ def set_user_email(user_id: str, email: str, username: str):
         entry = db.query(User).filter_by(user_id=user_id).first()
         if entry:
             entry.email = email
+            entry.google_sheet_id = create_sheet_for_user(username)
         else:
             now_iso = datetime.now().isoformat(timespec="seconds")
             unique_sheet = create_sheet_for_user(username)

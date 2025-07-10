@@ -4,3 +4,4 @@ venv/
 *.db
 *.log
 client_secret_79211922095_muh7p9c1ssc0l98eeuqcsivuubkngok1_apps.json
+deleter.py
