@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+import math
 from datetime import datetime, timezone
 from typing import Optional
 from dotenv import load_dotenv
@@ -37,71 +38,112 @@ with open('states.json', 'r', encoding='utf-8') as file:
 # Google API client
 client = googlemaps.Client(key=API_KEY)
 
+def _haversine_distance(lat1, lng1, lat2, lng2):
+    # Відстань між двома точками на сфері (метри)
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    return 2*R*math.asin(math.sqrt(a))
+
+def _generate_grid(lat, lng, radius, step):
+    # Генерує сітку точок у межах великого кола
+    points = []
+    dlat = step / 111320  # ~метрів на градус широти
+    for dy in range(-int(radius//step), int(radius//step)+1):
+        lat_ = lat + dy * dlat
+        # Коригуємо довжину дуги по довготі залежно від широти
+        dlng = step / (111320 * math.cos(math.radians(lat_)))
+        for dx in range(-int(radius//step), int(radius//step)+1):
+            lng_ = lng + dx * dlng
+            if _haversine_distance(lat, lng, lat_, lng_) <= radius:
+                points.append((lat_, lng_))
+    return points
+
 # Collector
-def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, state: Optional[str]=None, job_run_id: Optional[int]=None):
+def _collect_one_location(
+    db: Session,
+    keyword: str,
+    lat: float,
+    lng: float,
+    state: Optional[str]=None,
+    job_run_id: Optional[int]=None,
+    grid_step_meters: Optional[int]=None
+):
     existing = {row[0] for row in db.query(Company.place_id).yield_per(500)}
     seen: set[str] = set()
-    response = client.places_nearby(location=(lat, lng), radius=RADIUS_METERS, keyword=keyword)
+    # Якщо grid_step_meters заданий, робимо сітковий пошук
+    if grid_step_meters and grid_step_meters < RADIUS_METERS:
+        grid_points = _generate_grid(lat, lng, RADIUS_METERS, grid_step_meters)
+    else:
+        grid_points = [(lat, lng)]
 
-    while True:
-        for place in response.get("results", []):
-            pid = place["place_id"]
-            if pid in seen:
-                continue
-            details = client.place(place_id=pid, fields=[
-                "name", "formatted_address", "international_phone_number",
-                "website", "rating", "geometry",
-            ])
-            res = details["result"]
-            company_data = dict(
-                name=res.get("name"),
-                address=res.get("formatted_address"),
-                phone=res.get("international_phone_number"),
-                website=res.get("website"),
-                rating=res.get("rating"),
-                lat=res.get("geometry", {}).get("location", {}).get("lat"),
-                lng=res.get("geometry", {}).get("location", {}).get("lng"),
-                keyword=keyword,
-                state=state,
-            )
-            company = db.query(Company).filter_by(place_id=pid).first()
-            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            if company:
-                updated_fields = []
-                for idx, field in enumerate(["phone", "website", "rating"], start=1):
-                    if getattr(company, field) != company_data[field]:
-                        setattr(company, field, company_data[field])
-                        updated_fields.append(idx)
-                if updated_fields:
-                    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                    company.updated_at = json.dumps([updated_fields, now_iso])
-                    db.add(company)
-            else:
-                company = Company(
-                    place_id=pid,
-                    fetched_at=now_iso,
-                    updated_at=None,
-                    **company_data
+    for grid_lat, grid_lng in grid_points:
+        response = client.places_nearby(location=(grid_lat, grid_lng), radius=grid_step_meters or RADIUS_METERS, keyword=keyword)
+        while True:
+            for place in response.get("results", []):
+                pid = place["place_id"]
+                if pid in seen:
+                    continue
+                details = client.place(place_id=pid, fields=[
+                    "name", "formatted_address", "international_phone_number",
+                    "website", "rating", "geometry",
+                ])
+                res = details["result"]
+                company_data = dict(
+                    name=res.get("name"),
+                    address=res.get("formatted_address"),
+                    phone=res.get("international_phone_number"),
+                    website=res.get("website"),
+                    rating=res.get("rating"),
+                    lat=res.get("geometry", {}).get("location", {}).get("lat"),
+                    lng=res.get("geometry", {}).get("location", {}).get("lng"),
+                    keyword=keyword,
+                    state=state,
                 )
-                db.add(company)
-                db.commit()
-            # Додаємо зв’язок JobRunCompany
-            if job_run_id:
-                existing_link = db.query(JobRunCompany).filter_by(job_run_id=job_run_id, company_id=company.id).first()
-                if not existing_link:
-                    link = JobRunCompany(job_run_id=job_run_id, company_id=company.id)
-                    db.add(link)
+                company = db.query(Company).filter_by(place_id=pid).first()
+                now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                if company:
+                    updated_fields = []
+                    for idx, field in enumerate(["phone", "website", "rating"], start=1):
+                        if getattr(company, field) != company_data[field]:
+                            setattr(company, field, company_data[field])
+                            updated_fields.append(idx)
+                    if updated_fields:
+                        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                        company.updated_at = json.dumps([updated_fields, now_iso])
+                        db.add(company)
+                else:
+                    company = Company(
+                        place_id=pid,
+                        fetched_at=now_iso,
+                        updated_at=None,
+                        **company_data
+                    )
+                    db.add(company)
                     db.commit()
-            seen.add(pid)
+                if job_run_id:
+                    existing_link = db.query(JobRunCompany).filter_by(job_run_id=job_run_id, company_id=company.id).first()
+                    if not existing_link:
+                        link = JobRunCompany(job_run_id=job_run_id, company_id=company.id)
+                        db.add(link)
+                        db.commit()
+                seen.add(pid)
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            token = response.get("next_page_token")
+            if not token:
+                break
+            # Додаємо затримку, щоб токен встиг активуватись
+            time.sleep(2.5)
             try:
-                db.commit()
-            except Exception:
-                db.rollback()
-        token = response.get("next_page_token")
-        if not token:
-            break
-        time.sleep(REQUEST_DELAY)
-        response = client.places_nearby(page_token=token)
+                response = client.places_nearby(page_token=token)
+            except Exception as e:
+                # Якщо API повернув помилку, виходимо з циклу
+                break
 
 def collect_companies(
     keyword: str,
@@ -143,7 +185,8 @@ def collect_companies(
                         city_data['lat'], 
                         city_data['lng'], 
                         state_code,
-                        job_run_id
+                        job_run_id,
+                        grid_step_meters=2000
                     )
     except Exception as e:
         raise
@@ -219,8 +262,8 @@ def create_google_sheet(
         job_run_id: Optional[int] = None,
 ) -> str:
     creds = get_credentials()
-    service = build("sheets", "v4", credentials=creds)
-    drive_service = build("drive", "v3", credentials=creds)
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
     if not spreadsheet_id:
         raise ValueError("spreadsheet_id must be provided to write to an existing Google Sheet.")
@@ -318,7 +361,7 @@ def create_google_sheet(
 
 def create_sheet_for_user(username: str):
     creds = get_credentials()
-    service = build("sheets", "v4", credentials=creds)
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
     
     spreadsheet = {
         'properties': {
