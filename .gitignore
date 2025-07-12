@@ -7,3 +7,4 @@ client_secret_79211922095-8eho4lae2mil8t8jrpcpa2dgkukgo6f8.apps.googleuserconten
 deleter.py
 *.pickle
 __pycache__/
+test.py
