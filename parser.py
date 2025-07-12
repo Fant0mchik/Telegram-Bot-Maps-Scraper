@@ -5,7 +5,7 @@ import math
 from datetime import datetime, timezone
 from typing import Optional
 from dotenv import load_dotenv
-import googlemaps
+import requests
 from db import SessionLocal, Company, Session, or_, User, JobRun, JobRunCompany
 import threading
 import traceback
@@ -13,6 +13,7 @@ import json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
+
 from google_auth import get_credentials
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -22,7 +23,9 @@ logger = logging.getLogger(__name__)
 # Configuration
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
-RADIUS_METERS = int(os.getenv("RADIUS_METERS", "50000"))
+LARGE_RADIUS_METERS = int(os.getenv("LARGE_RADIUS_METERS", "50000"))
+MEDIUM_RADIUS_METERS = int(os.getenv("MEDIUM_RADIUS_METERS", "30000"))
+SMALL_RADIUS_METERS = int(os.getenv("SMALL_RADIUS_METERS", "10000"))
 REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "2.0"))
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE")
 if not API_KEY:
@@ -34,34 +37,51 @@ if not GOOGLE_CREDS_FILE:
 with open('states.json', 'r', encoding='utf-8') as file:
     LOCATIONS = json.load(file)
 
+# search func with Places API (New)
+def search_places(api_key, keyword, latitude, longitude, page_token=None, rad:int=LARGE_RADIUS_METERS):
+    url = "https://places.googleapis.com/v1/places:searchText"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.id,places.location,nextPageToken"
+    }
+    data = {
+        "textQuery": keyword,
+        "locationBias": {
+            "circle": {
+                "center": {
+                    "latitude": latitude,
+                    "longitude": longitude
+                },
+                "radius": rad
+            }
+        }
+    }
+    if page_token:
+        data["pageToken"] = page_token
+    
+    response = requests.post(url, headers=headers, json=data)
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return f"Error: {response.status_code} - {response.text}"
 
-# Google API client
-client = googlemaps.Client(key=API_KEY)
+def get_place_details(api_key, place_id):
+    url = f"https://places.googleapis.com/v1/places/{place_id}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "displayName,formattedAddress,internationalPhoneNumber,websiteUri,rating,location"
+    }
+    
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return f"Error: {response.status_code} - {response.text}"
 
-def _haversine_distance(lat1, lng1, lat2, lng2):
-    # Відстань між двома точками на сфері (метри)
-    R = 6371000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lng2 - lng1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    return 2*R*math.asin(math.sqrt(a))
-
-def _generate_grid(lat, lng, radius, step):
-    # Генерує сітку точок у межах великого кола
-    points = []
-    dlat = step / 111320  # ~метрів на градус широти
-    for dy in range(-int(radius//step), int(radius//step)+1):
-        lat_ = lat + dy * dlat
-        # Коригуємо довжину дуги по довготі залежно від широти
-        dlng = step / (111320 * math.cos(math.radians(lat_)))
-        for dx in range(-int(radius//step), int(radius//step)+1):
-            lng_ = lng + dx * dlng
-            if _haversine_distance(lat, lng, lat_, lng_) <= radius:
-                points.append((lat_, lng_))
-    return points
-
-# Collector
 def _collect_one_location(
     db: Session,
     keyword: str,
@@ -69,39 +89,48 @@ def _collect_one_location(
     lng: float,
     state: Optional[str]=None,
     job_run_id: Optional[int]=None,
-    grid_step_meters: Optional[int]=None
+    city_type: Optional[str]=None,
 ):
     existing = {row[0] for row in db.query(Company.place_id).yield_per(500)}
     seen: set[str] = set()
-    # Якщо grid_step_meters заданий, робимо сітковий пошук
-    if grid_step_meters and grid_step_meters < RADIUS_METERS:
-        grid_points = _generate_grid(lat, lng, RADIUS_METERS, grid_step_meters)
-    else:
-        grid_points = [(lat, lng)]
+    grid_points = [(lat, lng)]
 
     for grid_lat, grid_lng in grid_points:
-        response = client.places_nearby(location=(grid_lat, grid_lng), radius=grid_step_meters or RADIUS_METERS, keyword=keyword)
+        page_token = None
         while True:
-            for place in response.get("results", []):
-                pid = place["place_id"]
-                if pid in seen:
-                    continue
-                details = client.place(place_id=pid, fields=[
-                    "name", "formatted_address", "international_phone_number",
-                    "website", "rating", "geometry",
-                ])
-                res = details["result"]
-                company_data = dict(
-                    name=res.get("name"),
-                    address=res.get("formatted_address"),
-                    phone=res.get("international_phone_number"),
-                    website=res.get("website"),
-                    rating=res.get("rating"),
-                    lat=res.get("geometry", {}).get("location", {}).get("lat"),
-                    lng=res.get("geometry", {}).get("location", {}).get("lng"),
-                    keyword=keyword,
-                    state=state,
+            response = search_places(
+                API_KEY, keyword,
+                grid_lat,
+                grid_lng,
+                page_token,
+                LARGE_RADIUS_METERS if city_type == "large" else MEDIUM_RADIUS_METERS if city_type == "medium" else SMALL_RADIUS_METERS if city_type == "small" else LARGE_RADIUS_METERS
                 )
+            if isinstance(response, str):
+                logger.error(f"Error searching ({grid_lat}, {grid_lng}): {response}")
+                break
+            
+            for place in response.get("places", []):
+                pid = place["id"]
+                if pid in seen or pid in existing:
+                    continue
+                
+                details = get_place_details(API_KEY, pid)
+                if isinstance(details, str):
+                    logger.error(f"Error getting details place_id {pid}: {details}")
+                    continue
+                
+                company_data = {
+                    "name": place.get("displayName", {}).get("text"),
+                    "address": place.get("formattedAddress"),
+                    "phone": details.get("internationalPhoneNumber"),
+                    "website": details.get("websiteUri"),
+                    "rating": details.get("rating"),
+                    "lat": place.get("location", {}).get("latitude"),
+                    "lng": place.get("location", {}).get("longitude"),
+                    "keyword": keyword,
+                    "state": state,
+                }
+                
                 company = db.query(Company).filter_by(place_id=pid).first()
                 now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 if company:
@@ -111,7 +140,6 @@ def _collect_one_location(
                             setattr(company, field, company_data[field])
                             updated_fields.append(idx)
                     if updated_fields:
-                        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
                         company.updated_at = json.dumps([updated_fields, now_iso])
                         db.add(company)
                 else:
@@ -123,27 +151,39 @@ def _collect_one_location(
                     )
                     db.add(company)
                     db.commit()
+                
                 if job_run_id:
                     existing_link = db.query(JobRunCompany).filter_by(job_run_id=job_run_id, company_id=company.id).first()
                     if not existing_link:
                         link = JobRunCompany(job_run_id=job_run_id, company_id=company.id)
                         db.add(link)
                         db.commit()
+                
                 seen.add(pid)
                 try:
                     db.commit()
-                except Exception:
+                except Exception as e:
+                    logger.error(f"Error saving data for place_id {pid}: {str(e)}")
                     db.rollback()
-            token = response.get("next_page_token")
-            if not token:
+            
+            page_token = response.get("nextPageToken")
+            if not page_token:
                 break
-            # Додаємо затримку, щоб токен встиг активуватись
-            time.sleep(2.5)
-            try:
-                response = client.places_nearby(page_token=token)
-            except Exception as e:
-                # Якщо API повернув помилку, виходимо з циклу
-                break
+            time.sleep(REQUEST_DELAY)
+
+def geocode_city(city_name, state_code):
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {
+        "address": f"{city_name}, {state_code}, USA",
+        "key": API_KEY
+    }
+    resp = requests.get(url, params=params)
+    if resp.status_code == 200:
+        data = resp.json()
+        if data["status"] == "OK":
+            loc = data["results"][0]["geometry"]["location"]
+            return loc["lat"], loc["lng"]
+    return None, None
 
 def collect_companies(
     keyword: str,
@@ -159,6 +199,23 @@ def collect_companies(
         db = SessionLocal()
         close_db = True
     try:
+        if city_type == "manual" and city_name and states:
+            lat, lng = geocode_city(city_name, states)
+            if lat is None or lng is None:
+                log_status(task_id, f"Could not geocode city '{city_name}' in state '{states}'.")
+                return
+            log_status(task_id, f"Collecting for {city_name}, {states} (manual)")
+            _collect_one_location(
+                db,
+                keyword,
+                lat,
+                lng,
+                states,
+                job_run_id,
+                city_type=None
+            )
+            return
+
         if states is None or states == "ALL":
             locations = LOCATIONS.items()
         else:
@@ -170,23 +227,20 @@ def collect_companies(
 
         for state_code, state_data in locations:
             types_to_process = [city_type] if city_type and city_type != "all" else ['large', 'medium', 'small']
-            
             for current_type in types_to_process:
                 cities = state_data.get(current_type, [])
-                
                 for city_data in cities:
                     if city_name and city_data['city'].lower() != city_name.lower():
                         continue
-                    
                     log_status(task_id, f"Collecting for {city_data['city']}, {state_code} ({current_type})")
                     _collect_one_location(
-                        db, 
-                        keyword, 
-                        city_data['lat'], 
-                        city_data['lng'], 
+                        db,
+                        keyword,
+                        city_data['lat'],
+                        city_data['lng'],
                         state_code,
                         job_run_id,
-                        grid_step_meters=2000
+                        city_type=current_type
                     )
     except Exception as e:
         raise
