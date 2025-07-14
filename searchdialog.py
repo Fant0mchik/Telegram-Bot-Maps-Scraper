@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from parser import run_collector_in_thread, create_google_sheet, LOCATIONS
+from parser import run_collector_in_thread, create_google_sheet, LOCATIONS, wait_for_task
 from userauth import get_user_email, set_user_email, is_valid_email
 from db import SessionLocal, User
 
@@ -114,7 +114,8 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
 
     try:
         with SessionLocal() as db:
-            run_collector_in_thread(keyword, state, city_type, city_name, user_id)
+            task_id = run_collector_in_thread(keyword, state, city_type, city_name, user_id)
+            wait_for_task(task_id)
             context.user_data["pending_sheet_params"] = {
                 "user_id": user_id,
                 "keyword": keyword,
@@ -122,6 +123,7 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
                 "city_type": city_type,
                 "city_name": city_name,
             }
+            
             await ask_overwrite_sheet(update, context)
     except Exception as e:
         if reply_target:
