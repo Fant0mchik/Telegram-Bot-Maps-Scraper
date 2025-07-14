@@ -177,13 +177,19 @@ def geocode_city(city_name, state_code):
         "address": f"{city_name}, {state_code}, USA",
         "key": API_KEY
     }
-    resp = requests.get(url, params=params)
-    if resp.status_code == 200:
-        data = resp.json()
-        if data["status"] == "OK":
-            loc = data["results"][0]["geometry"]["location"]
-            return loc["lat"], loc["lng"]
-    return None, None
+    try:
+        resp = requests.get(url, params=params)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data["status"] == "OK" and data["results"]:
+                loc = data["results"][0]["geometry"]["location"]
+                return loc["lat"], loc["lng"]
+            else:
+                raise RuntimeError(
+                    f"City '{city_name}' not found in state '{state_code}'. Geocoding status: {data.get('status')}, results: {data.get('results')}")
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to geocode city '{city_name}': {str(e)}")
+
 
 def collect_companies(
     keyword: str,
@@ -200,10 +206,11 @@ def collect_companies(
         close_db = True
     try:
         if city_type == "manual" and city_name and states:
-            lat, lng = geocode_city(city_name, states)
-            if lat is None or lng is None:
-                log_status(task_id, f"Could not geocode city '{city_name}' in state '{states}'.")
-                return
+            try:
+                lat, lng = geocode_city(city_name, states)
+            except Exception as e:
+                log_status(task_id, f"Geocoding error: {str(e)}")
+                raise RuntimeError(f"Geocoding error: {str(e)}")
             log_status(task_id, f"Collecting for {city_name}, {states} (manual)")
             _collect_one_location(
                 db,
@@ -262,6 +269,8 @@ def log_status(task_id: str, message: str):
     with open(log_file, "a", encoding="utf-8") as lf:
         lf.write(message + "\n")
 
+active_threads = {}
+
 def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: Optional[str] = None, city_name: Optional[str] = None, user_id: Optional[str] = None):
     task = CollectorTask(keyword, state)
     log_status(task.id, f"Task {task.id} started at {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
@@ -300,10 +309,19 @@ def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: 
             elapsed = time.time() - start_time
             log_status(task.id, f"Task {task.id} finished with status: {task.status} in {elapsed:.2f} seconds")
             db.close()
+        active_threads.pop(task.id, None)
+
     thread = threading.Thread(target=target)
     thread.start()
-    thread.join()
+    active_threads[task.id] = thread
     return task.id
+
+def wait_for_task(task_id: str, timeout: Optional[float] = None):
+    thread = active_threads.get(task_id)
+    if thread is None:
+        return True  
+    thread.join(timeout)
+    return not thread.is_alive()
 
 def create_google_sheet(
         spreadsheet_id: str = None,
