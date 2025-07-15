@@ -181,12 +181,14 @@ def geocode_city(city_name, state_code):
         resp = requests.get(url, params=params)
         if resp.status_code == 200:
             data = resp.json()
-            if data["status"] == "OK" and data["results"]:
+            if data["status"] == "OK" and data["results"] != None:
                 loc = data["results"][0]["geometry"]["location"]
                 return loc["lat"], loc["lng"]
             else:
                 raise RuntimeError(
                     f"City '{city_name}' not found in state '{state_code}'. Geocoding status: {data.get('status')}, results: {data.get('results')}")
+        else:
+            raise RuntimeError(f"Geocoding request failed with status code {resp.status_code}: {resp.text}")
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to geocode city '{city_name}': {str(e)}")
 

@@ -24,6 +24,7 @@ Before using the search feature, users must first provide a valid email address 
 - 📥 Google Places API integration for detailed place data.
 - 📊 Google Sheets API integration to export and share results.
 - 💾 SQLite database to store and update place records.
+- 💠 Geocoding API integration for better manual cityes searching
 - 🔄 Reusable task system with logging.
 
 ---
@@ -48,13 +49,7 @@ git clone https://your-repo-url.git
 cd your-repo
 ```
 
-2. **Install dependencies:**
-
-```bash
-pip install -r requirements.txt
-```
-
-3. **Set up your .env file with the following variables:**
+2. **Set up your .env file with the following variables:**
 
 ```bash
 BOT_TOKEN=your_telegram_bot_token
@@ -64,7 +59,13 @@ RADIUS_METERS=50000
 REQUEST_DELAY=2.0
 ```
 
-4. **Place your states.json file with U.S. city coordinates in the root directory**
+3. **Place your token.pickle file**
+
+
+4. **Run docker-compose**
+```bash
+sudo docker-compose up --build -d
+```
 
 ---
 
