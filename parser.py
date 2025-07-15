@@ -1,10 +1,11 @@
 import os
 import time
 import uuid
+import math
 from datetime import datetime, timezone
 from typing import Optional
 from dotenv import load_dotenv
-import googlemaps
+import requests
 from db import SessionLocal, Company, Session, or_, User, JobRun, JobRunCompany
 import threading
 import traceback
@@ -12,6 +13,7 @@ import json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
+
 from google_auth import get_credentials
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -21,7 +23,9 @@ logger = logging.getLogger(__name__)
 # Configuration
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
-RADIUS_METERS = int(os.getenv("RADIUS_METERS", "50000"))
+LARGE_RADIUS_METERS = int(os.getenv("LARGE_RADIUS_METERS", "50000"))
+MEDIUM_RADIUS_METERS = int(os.getenv("MEDIUM_RADIUS_METERS", "30000"))
+SMALL_RADIUS_METERS = int(os.getenv("SMALL_RADIUS_METERS", "10000"))
 REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "2.0"))
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE")
 if not API_KEY:
@@ -33,75 +37,159 @@ if not GOOGLE_CREDS_FILE:
 with open('states.json', 'r', encoding='utf-8') as file:
     LOCATIONS = json.load(file)
 
+# search func with Places API (New)
+def search_places(api_key, keyword, latitude, longitude, page_token=None, rad:int=LARGE_RADIUS_METERS):
+    url = "https://places.googleapis.com/v1/places:searchText"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.id,places.location,nextPageToken"
+    }
+    data = {
+        "textQuery": keyword,
+        "locationBias": {
+            "circle": {
+                "center": {
+                    "latitude": latitude,
+                    "longitude": longitude
+                },
+                "radius": rad
+            }
+        }
+    }
+    if page_token:
+        data["pageToken"] = page_token
+    
+    response = requests.post(url, headers=headers, json=data)
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return f"Error: {response.status_code} - {response.text}"
 
-# Google API client
-client = googlemaps.Client(key=API_KEY)
+def get_place_details(api_key, place_id):
+    url = f"https://places.googleapis.com/v1/places/{place_id}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "displayName,formattedAddress,internationalPhoneNumber,websiteUri,rating,location"
+    }
+    
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        return f"Error: {response.status_code} - {response.text}"
 
-# Collector
-def _collect_one_location(db: Session, keyword: str, lat: float, lng: float, state: Optional[str]=None, job_run_id: Optional[int]=None):
+def _collect_one_location(
+    db: Session,
+    keyword: str,
+    lat: float,
+    lng: float,
+    state: Optional[str]=None,
+    job_run_id: Optional[int]=None,
+    city_type: Optional[str]=None,
+):
     existing = {row[0] for row in db.query(Company.place_id).yield_per(500)}
     seen: set[str] = set()
-    response = client.places_nearby(location=(lat, lng), radius=RADIUS_METERS, keyword=keyword)
+    grid_points = [(lat, lng)]
 
-    while True:
-        for place in response.get("results", []):
-            pid = place["place_id"]
-            if pid in seen:
-                continue
-            details = client.place(place_id=pid, fields=[
-                "name", "formatted_address", "international_phone_number",
-                "website", "rating", "geometry",
-            ])
-            res = details["result"]
-            company_data = dict(
-                name=res.get("name"),
-                address=res.get("formatted_address"),
-                phone=res.get("international_phone_number"),
-                website=res.get("website"),
-                rating=res.get("rating"),
-                lat=res.get("geometry", {}).get("location", {}).get("lat"),
-                lng=res.get("geometry", {}).get("location", {}).get("lng"),
-                keyword=keyword,
-                state=state,
-            )
-            company = db.query(Company).filter_by(place_id=pid).first()
-            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            if company:
-                updated_fields = []
-                for idx, field in enumerate(["phone", "website", "rating"], start=1):
-                    if getattr(company, field) != company_data[field]:
-                        setattr(company, field, company_data[field])
-                        updated_fields.append(idx)
-                if updated_fields:
-                    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                    company.updated_at = json.dumps([updated_fields, now_iso])
-                    db.add(company)
-            else:
-                company = Company(
-                    place_id=pid,
-                    fetched_at=now_iso,
-                    updated_at=None,
-                    **company_data
+    for grid_lat, grid_lng in grid_points:
+        page_token = None
+        while True:
+            response = search_places(
+                API_KEY, keyword,
+                grid_lat,
+                grid_lng,
+                page_token,
+                LARGE_RADIUS_METERS if city_type == "large" else MEDIUM_RADIUS_METERS if city_type == "medium" else SMALL_RADIUS_METERS if city_type == "small" else LARGE_RADIUS_METERS
                 )
-                db.add(company)
-                db.commit()
-            # Додаємо зв’язок JobRunCompany
-            if job_run_id:
-                existing_link = db.query(JobRunCompany).filter_by(job_run_id=job_run_id, company_id=company.id).first()
-                if not existing_link:
-                    link = JobRunCompany(job_run_id=job_run_id, company_id=company.id)
-                    db.add(link)
+            if isinstance(response, str):
+                logger.error(f"Error searching ({grid_lat}, {grid_lng}): {response}")
+                break
+            
+            for place in response.get("places", []):
+                pid = place["id"]
+                if pid in seen or pid in existing:
+                    continue
+                
+                details = get_place_details(API_KEY, pid)
+                if isinstance(details, str):
+                    logger.error(f"Error getting details place_id {pid}: {details}")
+                    continue
+                
+                company_data = {
+                    "name": place.get("displayName", {}).get("text"),
+                    "address": place.get("formattedAddress"),
+                    "phone": details.get("internationalPhoneNumber"),
+                    "website": details.get("websiteUri"),
+                    "rating": details.get("rating"),
+                    "lat": place.get("location", {}).get("latitude"),
+                    "lng": place.get("location", {}).get("longitude"),
+                    "keyword": keyword,
+                    "state": state,
+                }
+                
+                company = db.query(Company).filter_by(place_id=pid).first()
+                now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                if company:
+                    updated_fields = []
+                    for idx, field in enumerate(["phone", "website", "rating"], start=1):
+                        if getattr(company, field) != company_data[field]:
+                            setattr(company, field, company_data[field])
+                            updated_fields.append(idx)
+                    if updated_fields:
+                        company.updated_at = json.dumps([updated_fields, now_iso])
+                        db.add(company)
+                else:
+                    company = Company(
+                        place_id=pid,
+                        fetched_at=now_iso,
+                        updated_at=None,
+                        **company_data
+                    )
+                    db.add(company)
                     db.commit()
-            seen.add(pid)
-            try:
-                db.commit()
-            except Exception:
-                db.rollback()
-        token = response.get("next_page_token")
-        if not token:
-            break
-        time.sleep(REQUEST_DELAY)
-        response = client.places_nearby(page_token=token)
+                
+                if job_run_id:
+                    existing_link = db.query(JobRunCompany).filter_by(job_run_id=job_run_id, company_id=company.id).first()
+                    if not existing_link:
+                        link = JobRunCompany(job_run_id=job_run_id, company_id=company.id)
+                        db.add(link)
+                        db.commit()
+                
+                seen.add(pid)
+                try:
+                    db.commit()
+                except Exception as e:
+                    logger.error(f"Error saving data for place_id {pid}: {str(e)}")
+                    db.rollback()
+            
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+            time.sleep(REQUEST_DELAY)
+
+def geocode_city(city_name, state_code):
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {
+        "address": f"{city_name}, {state_code}, USA",
+        "key": API_KEY
+    }
+    try:
+        resp = requests.get(url, params=params)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data["status"] == "OK" and data["results"]:
+                loc = data["results"][0]["geometry"]["location"]
+                return loc["lat"], loc["lng"]
+            else:
+                raise RuntimeError(
+                    f"City '{city_name}' not found in state '{state_code}'. Geocoding status: {data.get('status')}, results: {data.get('results')}")
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to geocode city '{city_name}': {str(e)}")
+
 
 def collect_companies(
     keyword: str,
@@ -117,6 +205,24 @@ def collect_companies(
         db = SessionLocal()
         close_db = True
     try:
+        if city_type == "manual" and city_name and states:
+            try:
+                lat, lng = geocode_city(city_name, states)
+            except Exception as e:
+                log_status(task_id, f"Geocoding error: {str(e)}")
+                raise RuntimeError(f"Geocoding error: {str(e)}")
+            log_status(task_id, f"Collecting for {city_name}, {states} (manual)")
+            _collect_one_location(
+                db,
+                keyword,
+                lat,
+                lng,
+                states,
+                job_run_id,
+                city_type=None
+            )
+            return
+
         if states is None or states == "ALL":
             locations = LOCATIONS.items()
         else:
@@ -128,22 +234,20 @@ def collect_companies(
 
         for state_code, state_data in locations:
             types_to_process = [city_type] if city_type and city_type != "all" else ['large', 'medium', 'small']
-            
             for current_type in types_to_process:
                 cities = state_data.get(current_type, [])
-                
                 for city_data in cities:
                     if city_name and city_data['city'].lower() != city_name.lower():
                         continue
-                    
                     log_status(task_id, f"Collecting for {city_data['city']}, {state_code} ({current_type})")
                     _collect_one_location(
-                        db, 
-                        keyword, 
-                        city_data['lat'], 
-                        city_data['lng'], 
+                        db,
+                        keyword,
+                        city_data['lat'],
+                        city_data['lng'],
                         state_code,
-                        job_run_id
+                        job_run_id,
+                        city_type=current_type
                     )
     except Exception as e:
         raise
@@ -164,6 +268,8 @@ def log_status(task_id: str, message: str):
     log_file = f"logs\\{task_id}.log"
     with open(log_file, "a", encoding="utf-8") as lf:
         lf.write(message + "\n")
+
+active_threads = {}
 
 def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: Optional[str] = None, city_name: Optional[str] = None, user_id: Optional[str] = None):
     task = CollectorTask(keyword, state)
@@ -203,10 +309,19 @@ def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: 
             elapsed = time.time() - start_time
             log_status(task.id, f"Task {task.id} finished with status: {task.status} in {elapsed:.2f} seconds")
             db.close()
+        active_threads.pop(task.id, None)
+
     thread = threading.Thread(target=target)
     thread.start()
-    thread.join()
+    active_threads[task.id] = thread
     return task.id
+
+def wait_for_task(task_id: str, timeout: Optional[float] = None):
+    thread = active_threads.get(task_id)
+    if thread is None:
+        return True  
+    thread.join(timeout)
+    return not thread.is_alive()
 
 def create_google_sheet(
         spreadsheet_id: str = None,
@@ -219,8 +334,8 @@ def create_google_sheet(
         job_run_id: Optional[int] = None,
 ) -> str:
     creds = get_credentials()
-    service = build("sheets", "v4", credentials=creds)
-    drive_service = build("drive", "v3", credentials=creds)
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
+    drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
     if not spreadsheet_id:
         raise ValueError("spreadsheet_id must be provided to write to an existing Google Sheet.")
@@ -318,7 +433,7 @@ def create_google_sheet(
 
 def create_sheet_for_user(username: str):
     creds = get_credentials()
-    service = build("sheets", "v4", credentials=creds)
+    service = build("sheets", "v4", credentials=creds, cache_discovery=False)
     
     spreadsheet = {
         'properties': {
