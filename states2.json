@@ -1,0 +1,152 @@
+{
+  "AL": {
+    "Name": "Alabama"
+  },
+  "AK": {
+    "Name": "Alaska"
+  },
+  "AZ": {
+    "Name": "Arizona"
+  },
+  "AR": {
+    "Name": "Arkansas"
+  },
+  "CA": {
+    "Name": "California"
+  },
+  "CO": {
+    "Name": "Colorado"
+  },
+  "CT": {
+    "Name": "Connecticut"
+  },
+  "DE": {
+    "Name": "Delaware"
+  },
+  "FL": {
+    "Name": "Florida"
+  },
+  "GA": {
+    "Name": "Georgia"
+  },
+  "HI": {
+    "Name": "Hawaii"
+  },
+  "ID": {
+    "Name": "Idaho"
+  },
+  "IL": {
+    "Name": "Illinois"
+  },
+  "IN": {
+    "Name": "Indiana"
+  },
+  "IA": {
+    "Name": "Iowa"
+  },
+  "KS": {
+    "Name": "Kansas"
+  },
+  "KY": {
+    "Name": "Kentucky"
+  },
+  "LA": {
+    "Name": "Louisiana"
+  },
+  "ME": {
+    "Name": "Maine"
+  },
+  "MD": {
+    "Name": "Maryland"
+  },
+  "MA": {
+    "Name": "Massachusetts"
+  },
+  "MI": {
+    "Name": "Michigan"
+  },
+  "MN": {
+    "Name": "Minnesota"
+  },
+  "MS": {
+    "Name": "Mississippi"
+  },
+  "MO": {
+    "Name": "Missouri"
+  },
+  "MT": {
+    "Name": "Montana"
+  },
+  "NE": {
+    "Name": "Nebraska"
+  },
+  "NV": {
+    "Name": "Nevada"
+  },
+  "NH": {
+    "Name": "New Hampshire"
+  },
+  "NJ": {
+    "Name": "New Jersey"
+  },
+  "NM": {
+    "Name": "New Mexico"
+  },
+  "NY": {
+    "Name": "New York"
+  },
+  "NC": {
+    "Name": "North Carolina"
+  },
+  "ND": {
+    "Name": "North Dakota"
+  },
+  "OH": {
+    "Name": "Ohio"
+  },
+  "OK": {
+    "Name": "Oklahoma"
+  },
+  "OR": {
+    "Name": "Oregon"
+  },
+  "PA": {
+    "Name": "Pennsylvania"
+  },
+  "RI": {
+    "Name": "Rhode Island"
+  },
+  "SC": {
+    "Name": "South Carolina"
+  },
+  "SD": {
+    "Name": "South Dakota"
+  },
+  "TN": {
+    "Name": "Tennessee"
+  },
+  "TX": {
+    "Name": "Texas"
+  },
+  "UT": {
+    "Name": "Utah"
+  },
+  "VT": {
+    "Name": "Vermont"
+  },
+  "VA": {
+    "Name": "Virginia"
+  },
+  "WA": {
+    "Name": "Washington"
+  },
+  "WV": {
+    "Name": "West Virginia"
+  },
+  "WI": {
+    "Name": "Wisconsin"
+  },
+  "WY": {
+    "Name": "Wyoming"
+  }
+}

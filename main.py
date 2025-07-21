@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 import logging
-from searchdialog import handle_sheet_overwrite, search_handler, handle_text_response, handle_callback_query
+from searchdialog import handle_sheet_overwrite, search_handler, handle_text_response, handle_callback_query, handle_continue_search
 
 from userauth import get_user_email
 
@@ -50,6 +50,7 @@ def main():
     # Text messages
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_response))
     app.add_handler(CallbackQueryHandler(handle_sheet_overwrite, pattern=r"^sheet_overwrite:"))
+    app.add_handler(CallbackQueryHandler(handle_continue_search, pattern=r"^task_continue:"))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
 

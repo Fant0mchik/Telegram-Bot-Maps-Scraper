@@ -35,7 +35,7 @@ Before using the search feature, users must first provide a valid email address 
 - Telegram Bot API token
 - Google API Key (Places)
 - Google Service Account JSON credentials
-- `states.json` file with city location metadata
+- `states2.json` file with city location metadata
 - Required Python packages (see below)
 
 ---
@@ -55,8 +55,10 @@ cd your-repo
 BOT_TOKEN=your_telegram_bot_token
 GOOGLE_API_KEY=your_google_api_key
 GOOGLE_CREDS_FILE=your_service_account_file.json
-RADIUS_METERS=50000
-REQUEST_DELAY=2.0
+LARGE_RADIUS_METERS= 50000
+MEDIUM_RADIUS_METERS= 30000
+SMALL_RADIUS_METERS= 10000
+REQUEST_DELAY= 2.0
 ```
 
 3. **Place your token.pickle file**
@@ -64,20 +66,14 @@ REQUEST_DELAY=2.0
 
 4. **Run docker-compose**
 ```bash
-sudo docker-compose up --build -d
+sudo docker compose up --build -d
 ```
 
 ---
 
 ## ▶️ Usage
 
-1. **Start the bot:**
-
-```bash
-python main.py
-```
-
-2. **In Telegram:**
+1. **In Telegram:**
 
 - Use `/start` to view your current email status.
 

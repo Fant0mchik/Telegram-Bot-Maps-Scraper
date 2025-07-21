@@ -13,6 +13,7 @@ import json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import logging
+from worldcities import filter_cities_by_state_and_population
 
 from google_auth import get_credentials
 logging.basicConfig(
@@ -34,7 +35,7 @@ if not GOOGLE_CREDS_FILE:
     raise RuntimeError("Set the GOOGLE_CREDS_FILE environment variable first.")
 
 # Locations data
-with open('states.json', 'r', encoding='utf-8') as file:
+with open('states2.json', 'r', encoding='utf-8') as file:
     LOCATIONS = json.load(file)
 
 # search func with Places API (New)
@@ -200,7 +201,8 @@ def collect_companies(
     city_type: Optional[str] = None,
     city_name: Optional[str] = None,
     job_run_id: Optional[int] = None,
-    db: Optional[Session] = None
+    db: Optional[Session] = None,
+    filename: Optional[str] = None
 ):
     close_db = False
     if db is None:
@@ -224,6 +226,28 @@ def collect_companies(
                 city_type=None
             )
             return
+        else:
+            with open(os.path.join("logs", filename), "r", encoding="utf-8") as f:
+                lines = f.readlines()[1:]
+                #line data is in format: city,population; we need city list
+                cities = [line.split(",")[0] for line in lines if line.strip()]
+                for city in cities:
+                    try:
+                        lat, lng = geocode_city(city, states)
+                    except Exception as e:
+                        log_status(task_id, f"Geocoding error: {str(e)}")
+                        raise RuntimeError(f"Geocoding error: {str(e)}")
+                    log_status(task_id, f"Collecting for {city}, {states} (manual)")
+                    _collect_one_location(
+                        db,
+                        keyword,
+                        lat,
+                        lng,
+                        states,
+                        job_run_id,
+                        city_type=None
+                    )
+
 
         if states is None or states == "ALL":
             locations = LOCATIONS.items()
@@ -273,7 +297,7 @@ def log_status(task_id: str, message: str):
 
 active_threads = {}
 
-def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: Optional[str] = None, city_name: Optional[str] = None, user_id: Optional[str] = None):
+def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: Optional[str] = None, city_name: Optional[str] = None, user_id: Optional[str] = None,filename: Optional[str] = None):
     task = CollectorTask(keyword, state)
     log_status(task.id, f"Task {task.id} started at {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
     def target():
@@ -298,7 +322,8 @@ def run_collector_in_thread(keyword: str, state: Optional[str]=None, city_type: 
                 city_type=city_type,
                 city_name=city_name,
                 job_run_id=job_run.id,
-                db=db
+                db=db,
+                filename=filename
             )
             job_run.finished_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             db.commit()

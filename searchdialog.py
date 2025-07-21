@@ -3,10 +3,15 @@ from telegram.ext import ContextTypes
 from parser import run_collector_in_thread, create_google_sheet, LOCATIONS, wait_for_task
 from userauth import get_user_email, set_user_email, is_valid_email
 from db import SessionLocal, User
-
+from worldcities import filter_cities_by_state_and_population
+import os
 STATES_PER_PAGE = 10
 STATE_CODES = sorted(LOCATIONS.keys())
-CITY_TYPES = ['large', 'medium', 'small', 'all']
+CITY_TYPES = {
+    "large": 500000,
+    "medium": 250000,
+    "small": 100000,
+}
 
 def get_state_keyboard(page: int = 0):
     start = page * STATES_PER_PAGE
@@ -30,10 +35,10 @@ def get_state_keyboard(page: int = 0):
 
 def get_city_type_keyboard():
     buttons = [
-        [InlineKeyboardButton("🏙️ Large Cities", callback_data="city_type:large")],
-        [InlineKeyboardButton("🏘️ Medium Cities", callback_data="city_type:medium")],
-        [InlineKeyboardButton("🏡 Small Cities", callback_data="city_type:small")],
-        [InlineKeyboardButton("🌆 All City Types", callback_data="city_type:all")],
+        [InlineKeyboardButton("🏙️ Large Cities (>= 500,000 pop)", callback_data="city_type:large")],
+        [InlineKeyboardButton("🏘️ Medium Cities (>= 250,000 pop)", callback_data="city_type:medium")],
+        [InlineKeyboardButton("🏡 Small Cities (>= 100,000 pop)", callback_data="city_type:small")],
+        [InlineKeyboardButton("🌆 All City Types (Enter pop manualy)", callback_data="city_type:all")],
         [InlineKeyboardButton("🔍 Enter City Manually", callback_data="city_type:manual")]
     ]
     return InlineKeyboardMarkup(buttons)
@@ -75,7 +80,16 @@ async def handle_text_response(update: Update, context: ContextTypes.DEFAULT_TYP
         search_data["city_name"] = city_name
         search_data["city_type"] = "manual"
         await execute_search(update, context, search_data)
-    
+    elif stage == "awaiting_population":
+        try:
+            min_population = int(update.message.text.strip())
+            if min_population <= 0:
+                raise ValueError("Population must be a positive integer.")
+            search_data["min_population"] = min_population
+            search_data["city_type"] = "all"
+            await execute_search(update, context, search_data)
+        except ValueError:
+            await update.message.reply_text("❌ Invalid population. Please enter a positive integer.")
     else:
         await update.message.reply_text("Unknown input. Use /search to begin.")
 
@@ -91,6 +105,7 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
     state = search_data.get("state")
     city_type = search_data.get("city_type")
     city_name = search_data.get("city_name")
+    min_population = search_data.get("min_population")
     
     user_id = str(update.effective_user.id)
     email = get_user_email(user_id)
@@ -101,34 +116,14 @@ async def execute_search(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
             await reply_target.reply_text("❌ Session expired or email not set. Use /start to restart.")
         return
 
-    message = f"🔁 Started collection for keyword: `{keyword}`"
-    if state != "ALL":
-        message += f" in `{state}`"
-    if city_type and city_type != "all":
-        message += f" ({city_type} cities)"
-    if city_name:
-        message += f", city: {city_name}"
-
-    if reply_target:
-        await reply_target.reply_text(message, parse_mode="Markdown")
-
-    try:
-        with SessionLocal() as db:
-            task_id = run_collector_in_thread(keyword, state, city_type, city_name, user_id)
-            wait_for_task(task_id)
-            context.user_data["pending_sheet_params"] = {
-                "user_id": user_id,
-                "keyword": keyword,
-                "state": state,
-                "city_type": city_type,
-                "city_name": city_name,
-            }
-            
-            await ask_overwrite_sheet(update, context)
-    except Exception as e:
-        if reply_target:
-            await reply_target.reply_text(f"❌ Error occurred: {str(e)}")
-
+    filename = filter_cities_by_state_and_population(LOCATIONS[state]["Name"], min_population)
+    with open(os.path.join("logs", filename), "r", encoding="utf-8") as f:
+                lines = f.readlines()[1:]
+                resnum = len(lines)
+    search_data["filename"] = filename
+    await ask_continue_search(update, context, results=resnum)
+    #continue on handle_continue_search
+    
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -154,7 +149,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if city_type == "manual":
             context.user_data["search_stage"] = "awaiting_city_name"
             await query.edit_message_text("✏️ Please enter the city name:")
+        elif city_type == "all":
+            context.user_data["search_stage"] = "awaiting_population"
+            await query.edit_message_text("🔢 Please enter the minimum population:")
         else:
+            search_data["min_population"] = CITY_TYPES.get(city_type, 100000)
             await execute_search(update, context, search_data)
         return
 
@@ -169,6 +168,21 @@ async def ask_overwrite_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE
     if reply_target:
         await reply_target.reply_text(
             "Do you want to overwrite the Google Sheet or append to it?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def ask_continue_search(update: Update, context: ContextTypes.DEFAULT_TYPE, results:int = None):
+    reply_target = get_reply_target(update)
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Yes", callback_data="task_continue:True"),
+            InlineKeyboardButton("❌ No", callback_data="task_continue:False"),
+        ]
+    ]
+    if reply_target:
+        await reply_target.reply_text(
+            f"❓ Found {results} cities with given criteria.\nIt would use approximately 120+ API requests per city.\nDo you want to continue with the search?",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -209,3 +223,55 @@ async def handle_sheet_overwrite(update: Update, context: ContextTypes.DEFAULT_T
             except Exception as e:
                 if reply_target:
                     await reply_target.reply_text(f"❌ Error occurred: {str(e)}")
+
+
+async def handle_continue_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    reply_target = get_reply_target(update)
+    task_continue = data.split(":")[1] == "True"
+    if not task_continue:
+        reply_target = get_reply_target(update)
+        if reply_target:
+            await reply_target.reply_text("❌ Search cancelled.")
+        return
+
+    search_data = context.user_data.get("search_data", {})
+    if not search_data:
+        if reply_target:
+            await reply_target.reply_text("❌ No search data found. Please start a new search.")
+        return
+    
+    keyword = search_data.get("keyword")
+    state = search_data.get("state")
+    city_type = search_data.get("city_type")
+    city_name = search_data.get("city_name")
+    min_population = search_data.get("min_population")
+    filename = search_data.get("filename")
+    user_id = str(update.effective_user.id)
+    message = f"🔁 Started collection for keyword: `{keyword}`"
+    if state != "ALL":
+        message += f" in `{state}`"
+    if city_type and city_type != "all":
+        message += f" ({city_type} cities)"
+    if city_name:
+        message += f", city: {city_name}"
+
+    if reply_target:
+        await reply_target.reply_text(message, parse_mode="Markdown")
+
+    try:
+        task_id = run_collector_in_thread(keyword, state, city_type, city_name, user_id, filename=filename)
+        wait_for_task(task_id)
+        context.user_data["pending_sheet_params"] = {
+            "user_id": user_id,
+            "keyword": keyword,
+            "state": state,
+            "city_type": city_type,
+            "city_name": city_name,
+        }            
+        await ask_overwrite_sheet(update, context)
+    except Exception as e:
+        if reply_target:
+            await reply_target.reply_text(f"❌ Error occurred: {str(e)}")
