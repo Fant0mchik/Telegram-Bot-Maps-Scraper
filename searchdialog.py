@@ -56,10 +56,13 @@ async def handle_text_response(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get("awaiting_email"):
         email = update.message.text.strip()
         if is_valid_email(email):
-            user_id = str(update.effective_user.id)
-            set_user_email(user_id, email, username)
-            context.user_data["awaiting_email"] = False
-            await update.message.reply_text(f"✅ Email saved: {email}")
+            try:
+                user_id = str(update.effective_user.id)
+                set_user_email(user_id, email, username)
+                context.user_data["awaiting_email"] = False
+                await update.message.reply_text(f"✅ Email saved: {email}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error saving email: {str(e)}")
         else:
             await update.message.reply_text("❌ Invalid email. Try again:")
     

@@ -13,7 +13,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO  # You can change this to DEBUG for more verbosity
+    level=logging.ERROR  # You can change this to DEBUG for more verbosity
 )
 logger = logging.getLogger(__name__)
 # Command /start
